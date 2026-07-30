@@ -2,6 +2,11 @@
 
 在 Linux/Wine/CrossOver 下让红色警戒3 连接 [RA3 Battle.net](https://ra3battle.net/) 战网。
 
+## 说明
+
+整个项目基于 sokie的 cnc_proxy项目以及他的 ra3_proxy_support分支，以及lanyizi的RA3快速启动器而来，不具备独立的创新性！！！
+
+
 ## 原理
 
 RA3 启动时自动加载 `Data/winmm.dll`（DLL 搜索顺序劫持），该 DLL：
