@@ -6,6 +6,27 @@
 
 整个项目基于 sokie的 cnc_proxy项目以及他的 ra3_proxy_support分支，以及lanyizi的RA3快速启动器而来，不具备独立的创新性！！！
 
+## 使用
+
+1. 安装战网客户端（WINE中不可使用也没关系)
+2. Build或者从Releases里下载RA3.exe替换红警3目录里的RA3.exe
+3. 勾选 "战网代理" 复选框,点击 "浏览..." 选择你的 `NativeDll.dll` 路径（此文件存在于你的战网安装目录的contents文件夹下）
+4. 点击 Play — 启动游戏,启动后自动加载战网不需要打开客户端 
+
+
+## 一些你需要知道的 
+
+为了加载战网使用了dll劫持，使得加载我打了补丁的dll文件，一旦勾选战网代理并且启动游戏就会自动修改注册表使得"winmm.dll"设置为当前文件夹下的优先加载，如果造成其他影响可以从这里开始排查！ 
+
+以及一旦勾选战网代理就会在当前游戏目录下输出一个'ra3bn.ini'的文件，这个文件用ini格式记录了路径框里你选择的路径数据，删除文件会恢复硬编码默认。
+
+## 卸载
+
+不要直接卸载，会造成注册表残留，要取消勾选战网代理之后启动一次游戏，再退出游戏后可以安全卸载RA3.exe
+
+取消勾选再点 Play 会删除 `Data/winmm.dll`，恢复纯净状态,并且删除添加的注册表项。
+
+
 
 ## 原理
 
@@ -73,18 +94,6 @@ cd /path/to/RA3Bar-RA3Launcher
 
 > 注：`SetEnvironmentVariable("WINEDLLOVERRIDES")` 在 Wine 中无效，因为 Wine server 在进程启动时读取环境变量，运行时设置的不会被 wine server 识别。
 
-## 使用
-
-1. 启动 `RA3.exe`（RA3Bar 启动器）
-2. 勾选 "战网代理" 复选框
-3. 点击 "浏览..." 选择你的 `NativeDll.dll` 路径
-4. 点击 Play — 启动器自动：
-   - 设置 `WINEDLLOVERRIDES=winmm=n,b` 环境变量
-   - 解压 `winmm.dll` 到 `Data/`
-   - 写入 `ra3bn.ini`
-5. 游戏启动后自动加载战网
-
-取消勾选再点 Play 会删除 `Data/winmm.dll`，恢复纯净状态。
 
 ## ra3bn.ini 格式
 
