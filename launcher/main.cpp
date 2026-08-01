@@ -414,59 +414,24 @@ int main() {
 
 			auto finalArguments = ra3Path + gameExe + otherArguments + modArgument + replayArgument + configArgument;
 
-			// BattleNet proxy setup
+			// ra3bn.ini — DLL + registry already handled by checkbox handler.
+			// Just update the ini if path changed.
 			if (options->proxyEnabled && !options->proxyDllPath.empty()) {
-				// Extract winmm.dll from embedded resource to Data/
-				auto dllData = Windows::loadBinaryDataResource<char>(
-					GetModuleHandle(nullptr), MAKEINTRESOURCEW(PROXY_DLL), RT_RCDATA);
-				auto dllPath = ra3Path + L"Data\\winmm.dll";
-				{
-					auto f = Windows::createFile(dllPath, GENERIC_WRITE, 0, CREATE_ALWAYS);
+				auto iniPath = ra3Path + L"ra3bn.ini";
+				std::string newIni = "[ra3bn]\r\npath=" +
+					Windows::toBytes(options->proxyDllPath) + "\r\n";
+				bool needWrite = true;
+				if (Windows::fileExists(iniPath)) {
+					auto existing = readEntireFile<char>(
+						Windows::createFile(iniPath, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING).get());
+					std::string oldIni(existing.begin(), existing.end());
+					if (oldIni == newIni) needWrite = false;
+				}
+				if (needWrite) {
+					auto f = Windows::createFile(iniPath, GENERIC_WRITE, 0, CREATE_ALWAYS);
 					auto total = DWORD{0};
-					WriteFile(f.get(), dllData.data(), dllData.size(), &total, nullptr)
-						>> Windows::checkWin32Result("WriteFile winmm.dll", Windows::errorValue, false);
-				}
-				// Write ra3bn.ini only if changed or new
-				{
-					auto iniPath = ra3Path + L"ra3bn.ini";
-					std::string newIni = "[ra3bn]\r\npath=" +
-						Windows::toBytes(options->proxyDllPath) + "\r\n";
-					bool needWrite = true;
-					if (Windows::fileExists(iniPath)) {
-						auto existing = readEntireFile<char>(
-							Windows::createFile(iniPath, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING).get());
-						std::string oldIni(existing.begin(), existing.end());
-						if (oldIni == newIni) needWrite = false;
-					}
-					if (needWrite) {
-						auto f = Windows::createFile(iniPath, GENERIC_WRITE, 0, CREATE_ALWAYS);
-						auto total = DWORD{0};
-						WriteFile(f.get(), newIni.data(), newIni.size(), &total, nullptr)
-							>> Windows::checkWin32Result("WriteFile ra3bn.ini", Windows::errorValue, false);
-					}
-				}
-			}
-
-			// Wine ignores per-process WINEDLLOVERRIDES.
-			// Write to Wine registry (what winecfg does). Creates key if needed.
-			try {
-				auto key = Windows::openRegistryKey(HKEY_CURRENT_USER,
-					L"Software\\Wine\\DllOverrides", KEY_WRITE | KEY_READ);
-				if (options->proxyEnabled)
-					Windows::setRegistryString(key.get(), L"winmm", L"native,builtin");
-				else
-					RegDeleteValueW(key.get(), L"winmm");
-			} catch (...) {
-				auto wineKey = Windows::openRegistryKey(HKEY_CURRENT_USER,
-					L"Software\\Wine", KEY_WRITE | KEY_READ);
-				HKEY hDll;
-				if (RegCreateKeyExW(wineKey.get(), L"DllOverrides", 0, nullptr, 0,
-				    KEY_WRITE, nullptr, &hDll, nullptr) == ERROR_SUCCESS) {
-					if (options->proxyEnabled)
-						Windows::setRegistryString(hDll, L"winmm", L"native,builtin");
-					else
-						RegDeleteValueW(hDll, L"winmm");
-					RegCloseKey(hDll);
+					WriteFile(f.get(), newIni.data(), newIni.size(), &total, nullptr)
+						>> Windows::checkWin32Result("WriteFile ra3bn.ini", Windows::errorValue, false);
 				}
 			}
 

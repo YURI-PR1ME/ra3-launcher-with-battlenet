@@ -208,15 +208,46 @@ static DWORD WINAPI DelegateWorker(LPVOID) {
 }
 
 // ===================================================================
+// Set FPU+SSE to Windows defaults — called for every thread
+// ===================================================================
+static void fix_float_precision(void) {
+    // x87 FPU: 80-bit extended precision (PC=11)
+    // Linux/Wine defaults to 64-bit, causing RTS OOS vs Windows players
+    unsigned short cw;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    cw = (cw & 0xFCFF) | 0x0300;
+    __asm__ volatile("fldcw %0" : : "m"(cw));
+
+    // SSE MXCSR: Windows default = 0x1F80
+    // (round-nearest, all exceptions masked, no flush-to-zero, no denormals-are-zero)
+    unsigned int mxcsr = 0x1F80;
+    __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
+}
+
+// ===================================================================
 // DllMain
 // ===================================================================
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
+    switch (reason) {
+    case DLL_PROCESS_ATTACH:
         dbg("DLL_PROCESS_ATTACH");
-        DisableThreadLibraryCalls(h);
+        fix_float_precision();
+        dbg("FPU+SSE set to Windows defaults (main thread)");
+
+        // Do NOT disable thread calls — we need DLL_THREAD_ATTACH
+        // to fix FPU/SSE for every game-created thread.
         init_winmm_forwarders();
-        HANDLE t = CreateThread(nullptr, 0, DelegateWorker, nullptr, 0, nullptr);
-        if (t) CloseHandle(t);
+        {
+            HANDLE t = CreateThread(nullptr, 0, DelegateWorker, nullptr, 0, nullptr);
+            if (t) CloseHandle(t);
+        }
+        dbg("DllMain done");
+        break;
+
+    case DLL_THREAD_ATTACH:
+        // Fix FPU/SSE for every new thread the game spawns
+        fix_float_precision();
+        break;
     }
     return TRUE;
 }

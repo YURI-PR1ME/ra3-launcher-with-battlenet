@@ -743,19 +743,54 @@ std::optional<LaunchOptions> runControlCenter(const std::wstring& ra3Path, const
 			return FALSE;
 		}
 		switch(identifier) {
+			case IDC_ENABLE_PROXY: {
+				// Toggled immediately — write/clear DLL + Registry now
+				bool checked = (SendMessageW(getControlByID(window, IDC_ENABLE_PROXY), BM_GETCHECK, 0, 0) == BST_CHECKED);
+				auto dllPath = ra3Path + L"Data\\winmm.dll";
+
+				if (checked) {
+					// Extract winmm.dll from embedded resource
+					auto dllData = Windows::loadBinaryDataResource<char>(
+						GetModuleHandle(nullptr), MAKEINTRESOURCEW(PROXY_DLL), RT_RCDATA);
+					auto f = Windows::createFile(dllPath, GENERIC_WRITE, 0, CREATE_ALWAYS);
+					DWORD written = 0;
+					WriteFile(f.get(), dllData.data(), dllData.size(), &written, nullptr);
+
+					// Set Wine registry
+					try {
+						auto key = Windows::openRegistryKey(HKEY_CURRENT_USER,
+							L"Software\\Wine\\DllOverrides", KEY_WRITE | KEY_READ);
+						Windows::setRegistryString(key.get(), L"winmm", L"native,builtin");
+					} catch (...) {
+						auto wineKey = Windows::openRegistryKey(HKEY_CURRENT_USER,
+							L"Software\\Wine", KEY_WRITE | KEY_READ);
+						HKEY hDll;
+						if (RegCreateKeyExW(wineKey.get(), L"DllOverrides", 0, nullptr, 0,
+						    KEY_WRITE, nullptr, &hDll, nullptr) == ERROR_SUCCESS) {
+							Windows::setRegistryString(hDll, L"winmm", L"native,builtin");
+							RegCloseKey(hDll);
+						}
+					}
+				} else {
+					// Delete DLL
+					DeleteFileW(dllPath.c_str());
+					// Clear Wine registry
+					try {
+						auto key = Windows::openRegistryKey(HKEY_CURRENT_USER,
+							L"Software\\Wine\\DllOverrides", KEY_WRITE | KEY_READ);
+						RegDeleteValueW(key.get(), L"winmm");
+					} catch (...) {}
+				}
+				break;
+			}
 			case playGame: {
 				auto opts = LaunchOptions{LaunchOptions::noFile, {}, getCommandLines(window)};
-				auto proxyCheck = getControlByID(window, IDC_ENABLE_PROXY);
-				if (SendMessageW(proxyCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+				if (SendMessageW(getControlByID(window, IDC_ENABLE_PROXY), BM_GETCHECK, 0, 0) == BST_CHECKED) {
 					opts.proxyEnabled = true;
 					auto len = GetWindowTextLengthW(getControlByID(window, IDC_PROXY_PATH));
 					opts.proxyDllPath.resize(len + 1);
 					GetWindowTextW(getControlByID(window, IDC_PROXY_PATH), opts.proxyDllPath.data(), len + 1);
 					opts.proxyDllPath.resize(len);
-				} else {
-					// Unchecked: clean up proxy DLL if it exists
-					auto dllPath = ra3Path + L"Data\\winmm.dll";
-					DeleteFileW(dllPath.c_str());
 				}
 				endControlCenter(window, std::move(opts));
 				break;
