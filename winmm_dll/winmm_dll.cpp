@@ -219,8 +219,8 @@ static void fix_float_precision(void) {
     __asm__ volatile("fldcw %0" : : "m"(cw));
 
     // SSE MXCSR: Windows default = 0x1F80
-    // (round-nearest, all exceptions masked, no flush-to-zero, no denormals-are-zero)
-    unsigned int mxcsr = 0x1F80;
+    // ldmxcsr requires 16-byte aligned memory — use aligned variable.
+    __attribute__((aligned(16))) unsigned int mxcsr = 0x1F80;
     __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
 }
 
