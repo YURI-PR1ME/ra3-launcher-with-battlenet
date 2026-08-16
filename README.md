@@ -2,6 +2,8 @@
 
 在 Linux/Wine/CrossOver 下让红色警戒3 连接 [RA3 Battle.net](https://ra3battle.net/) 战网。
 
+对于MacOS的设备需要使用位于 pathcer里面的脚本对NativeDLL.dll进行修补才行
+
 ## 原理
 
 RA3 启动时自动加载 `Data/winmm.dll`（DLL 搜索顺序劫持），该 DLL：
