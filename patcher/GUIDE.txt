@@ -1,0 +1,5 @@
+run: 
+
+python3 ./patch_nativedll.py NativeDLL.dll 
+
+the patcher will automatically backup a native dll and generate a new patched one.
