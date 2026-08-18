@@ -1,4 +1,4 @@
-# Makefile for RA3 BattleNet proxy (winmm.dll) — minimal build
+# Makefile for RA3 BattleNet proxy — builds winmm.dll and the RA3.exe launcher
 CXX      := i686-w64-mingw32-g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -static-libgcc -static-libstdc++
 LDFLAGS  := -static -lws2_32 -lversion
@@ -7,8 +7,9 @@ CFLAGS   := -O2 -Wall
 
 TARGET   := winmm.dll
 SOURCES  := winmm_dll.cpp forwarders.c
+LAUNCHER := launcher/RA3.exe
 
-all: $(TARGET)
+all: $(TARGET) $(LAUNCHER)
 
 $(TARGET): $(SOURCES)
 	$(CC) $(CFLAGS) -c forwarders.c -o forwarders.o
@@ -17,7 +18,15 @@ $(TARGET): $(SOURCES)
 	@echo "Built $@ ($$(du -h $@ | cut -f1))"
 	@i686-w64-mingw32-objdump -p $@ | grep "DLL Name" | sort -u
 
+# Launcher: hand the freshly built DLL to the launcher build as
+# winmm_proxy.dll (embedded via resource.rc), then build RA3.exe.
+# cmp keeps the mtime stable so an unchanged DLL doesn't force a relink.
+$(LAUNCHER): $(TARGET) launcher/Makefile
+	cmp -s $(TARGET) launcher/winmm_proxy.dll || cp $(TARGET) launcher/winmm_proxy.dll
+	$(MAKE) -C launcher
+
 clean:
 	rm -f $(TARGET) *.o *.log
+	$(MAKE) -C launcher clean
 
 .PHONY: all clean

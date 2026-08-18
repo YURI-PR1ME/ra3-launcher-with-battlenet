@@ -200,28 +200,164 @@ static DWORD WINAPI DelegateWorker(LPVOID) {
     info.host_pid = GetCurrentProcessId();
 
     dbg("Invoking entry point...");
-    if (entryCdecl) entryCdecl(&info);
-    else entryStdcall(&info);
+    // stdcall first — same order as the verified-good dsound proxy
+    // (native_invoke_entry_point merely forwards to the stdcall entry).
+    if (entryStdcall) entryStdcall(&info);
+    else if (entryCdecl) entryCdecl(&info);
 
     dbg("Delegate done — NativeDll invoked");
     return 0;
 }
 
 // ===================================================================
-// Set FPU+SSE to Windows defaults — called for every thread
+// FPU precision mode — runtime-selectable via env var RA3BN_FPU:
+//   off | 53 | 80   (default: 53)
+//
+//   off : don't touch FPU/SSE at all — identical to the loaders that
+//         never desync (dsound proxy / Tacitus / cnc_game_proxy),
+//         which all do zero FPU work and disable thread callbacks.
+//   53  : force x87 PC=53-bit double on every thread — the REAL
+//         Windows default control word 0x027F.  Wine already sets
+//         0x027F in RtlUserThreadStart, so this is a no-op there and
+//         only acts as a safety net elsewhere.
+//   80  : old behavior (PC=11, 80-bit extended) — kept only for A/B
+//         comparison; NOT the Windows default.
+//
+// History: the old code forced PC=11 (80-bit) claiming that was the
+// "Windows default" — that premise was inverted (the Windows default
+// is 0x027F = 53-bit).  80-vs-53-bit divergence between players
+// accumulates over lockstep play and causes 失去同步 (out of sync).
+//
+// Compile-time default override: -DRA3BN_FPU_DEFAULT=0|1|2.
+// ===================================================================
+enum FpuMode { FPU_OFF = 0, FPU_53 = 1, FPU_80 = 2 };
+
+#ifndef RA3BN_FPU_DEFAULT
+#define RA3BN_FPU_DEFAULT FPU_53
+#endif
+
+static int g_fpu_mode = RA3BN_FPU_DEFAULT;
+
+// RA3BN_FPU_LOG=1 → append per-thread CW/MXCSR before/after values
+// to %TEMP%\ra3bn_fpu.log (first 32 lines only).
+static int g_fpu_log_enabled = 0;
+static volatile long g_fpu_log_count = 0;
+static const long FPU_LOG_MAX = 32;
+static HANDLE g_fpu_log_file = INVALID_HANDLE_VALUE;
+static const char* const FPU_MODE_NAMES[] = { "off", "53", "80" };
+
+// Manual compare — no CRT helpers (DllMain must stay loader-lock
+// friendly; GetEnvironmentVariableA is a pure PEB read).
+static int FpuModeFromEnv(void) {
+    char buf[16] = {0};
+    DWORD n = GetEnvironmentVariableA("RA3BN_FPU", buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return RA3BN_FPU_DEFAULT;
+    for (char* p = buf; *p; p++)
+        if (*p >= 'A' && *p <= 'Z') *p += 32;
+    if (buf[0]=='o' && buf[1]=='f' && buf[2]=='f' && buf[3]==0) return FPU_OFF;
+    if (buf[0]=='8' && buf[1]=='0' && buf[2]==0)               return FPU_80;
+    if (buf[0]=='5' && buf[1]=='3' && buf[2]==0)               return FPU_53;
+    return RA3BN_FPU_DEFAULT;
+}
+
+static int FpuLogFromEnv(void) {
+    char buf[8] = {0};
+    DWORD n = GetEnvironmentVariableA("RA3BN_FPU_LOG", buf, sizeof(buf));
+    return (n == 1 && buf[0] == '1');
+}
+
+// ---- optional diagnostics (kernel32 only, no CRT, no allocations) ----
+static void FpuLogOpen(void) {
+    wchar_t path[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, path) || !path[0]) return;
+    wcscat(path, L"ra3bn_fpu.log");
+    g_fpu_log_file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ,
+                                 NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+static void FpuHex16(char* out, unsigned short v) {
+    static const char h[] = "0123456789ABCDEF";
+    out[0] = '0'; out[1] = 'x';
+    for (int i = 0; i < 4; i++) out[2 + i] = h[(v >> (12 - 4 * i)) & 0xF];
+    out[6] = 0;
+}
+
+static void FpuHex32(char* out, unsigned int v) {
+    static const char h[] = "0123456789ABCDEF";
+    out[0] = '0'; out[1] = 'x';
+    for (int i = 0; i < 8; i++) out[2 + i] = h[(v >> (28 - 4 * i)) & 0xF];
+    out[10] = 0;
+}
+
+static void FpuLog(const char* tag,
+                   unsigned short preCW, unsigned short postCW,
+                   unsigned int preMX, unsigned int postMX) {
+    if (g_fpu_log_file == INVALID_HANDLE_VALUE) return;
+    if (InterlockedIncrement(&g_fpu_log_count) > FPU_LOG_MAX) return;
+    char line[160], *p = line;
+    while (*tag) *p++ = *tag++;
+    *p++ = ' ';
+    const char* m = FPU_MODE_NAMES[g_fpu_mode];
+    while (*m) *p++ = *m++;
+    *p++ = ' '; *p++ = 'p'; *p++ = 'r'; *p++ = 'e'; *p++ = 'C'; *p++ = 'W'; *p++ = '=';
+    FpuHex16(p, preCW);  p += 6;
+    *p++ = ' '; *p++ = 'p'; *p++ = 'o'; *p++ = 's'; *p++ = 't'; *p++ = 'C'; *p++ = 'W'; *p++ = '=';
+    FpuHex16(p, postCW); p += 6;
+    *p++ = ' '; *p++ = 'p'; *p++ = 'r'; *p++ = 'e'; *p++ = 'M'; *p++ = 'X'; *p++ = '=';
+    FpuHex32(p, preMX);  p += 10;
+    *p++ = ' '; *p++ = 'p'; *p++ = 'o'; *p++ = 's'; *p++ = 't'; *p++ = 'M'; *p++ = 'X'; *p++ = '=';
+    FpuHex32(p, postMX); p += 10;
+    *p++ = '\r'; *p++ = '\n';
+    DWORD written = 0;
+    WriteFile(g_fpu_log_file, line, (DWORD)(p - line), &written, NULL);
+}
+
+// 16-byte-aligned static buffer: stmxcsr/ldmxcsr fault on unaligned
+// addresses; a static sidesteps 32-bit stack-alignment pitfalls.
+static __attribute__((aligned(16))) unsigned int fpu_mxcsr_buf = 0x1F80;
+
+// ===================================================================
+// Set FPU+SSE to the selected mode — called once per game thread
 // ===================================================================
 static void fix_float_precision(void) {
-    // x87 FPU: 80-bit extended precision (PC=11)
-    // Linux/Wine defaults to 64-bit, causing RTS OOS vs Windows players
-    unsigned short cw;
-    __asm__ volatile("fnstcw %0" : "=m"(cw));
-    cw = (cw & 0xFCFF) | 0x0300;
+    if (g_fpu_mode == FPU_OFF) return;
+
+    unsigned short preCW;
+    __asm__ volatile("fnstcw %0" : "=m"(preCW));
+    unsigned int preMX;
+    __asm__ volatile("stmxcsr %0" : "=m"(fpu_mxcsr_buf));
+    preMX = fpu_mxcsr_buf;
+
+    // Set only the PC (precision-control) bits 8-9; preserve RC
+    // (rounding) and exception masks.  53-bit → 0x0200 (real Windows
+    // default 0x027F); 80-bit → 0x0300 (old behavior, comparison only).
+    unsigned short cw = (unsigned short)((preCW & 0xFCFF) |
+                          (g_fpu_mode == FPU_80 ? 0x0300 : 0x0200));
     __asm__ volatile("fldcw %0" : : "m"(cw));
 
-    // SSE MXCSR: Windows default = 0x1F80
-    // ldmxcsr requires 16-byte aligned memory — use aligned variable.
-    __attribute__((aligned(16))) unsigned int mxcsr = 0x1F80;
-    __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
+    // SSE MXCSR: Windows default = 0x1F80 (round-nearest, all
+    // exceptions masked, no FTZ/DAZ).  Already correct — unchanged.
+    fpu_mxcsr_buf = 0x1F80;
+    __asm__ volatile("ldmxcsr %0" : : "m"(fpu_mxcsr_buf));
+
+    if (g_fpu_log_enabled) {
+        unsigned short postCW;
+        unsigned int postMX;
+        __asm__ volatile("fnstcw %0" : "=m"(postCW));
+        __asm__ volatile("stmxcsr %0" : "=m"(fpu_mxcsr_buf));
+        postMX = fpu_mxcsr_buf;
+        FpuLog("thread", preCW, postCW, preMX, postMX);
+    }
+}
+
+// One snapshot line for process attach (works in off mode too).
+static void FpuLogSnapshot(const char* tag) {
+    if (!g_fpu_log_enabled) return;
+    unsigned short cw;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    __asm__ volatile("stmxcsr %0" : "=m"(fpu_mxcsr_buf));
+    unsigned int mx = fpu_mxcsr_buf;
+    FpuLog(tag, cw, cw, mx, mx);
 }
 
 // ===================================================================
@@ -231,11 +367,24 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
     switch (reason) {
     case DLL_PROCESS_ATTACH:
         dbg("DLL_PROCESS_ATTACH");
-        fix_float_precision();
-        dbg("FPU+SSE set to Windows defaults (main thread)");
 
-        // Do NOT disable thread calls — we need DLL_THREAD_ATTACH
-        // to fix FPU/SSE for every game-created thread.
+        // Read FPU mode once; the process environment is fixed from here on.
+        g_fpu_mode = FpuModeFromEnv();
+        if (FpuLogFromEnv()) { g_fpu_log_enabled = 1; FpuLogOpen(); }
+
+        fix_float_precision();   // main thread
+        FpuLogSnapshot("attach");
+
+        if (g_fpu_mode == FPU_OFF) {
+            // off mode: exactly like the loaders that never desync —
+            // no per-thread FPU work at all, no thread callbacks.
+            DisableThreadLibraryCalls(h);
+        }
+        // modes 53/80: keep DLL_THREAD_ATTACH so every game thread
+        // gets Windows-default precision before its routine runs (if
+        // the game sets its own CW later, the game wins — the same as
+        // on real Windows).
+
         init_winmm_forwarders();
         {
             HANDLE t = CreateThread(nullptr, 0, DelegateWorker, nullptr, 0, nullptr);
@@ -245,7 +394,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         break;
 
     case DLL_THREAD_ATTACH:
-        // Fix FPU/SSE for every new thread the game spawns
+        // Apply FPU mode to every new thread the game spawns
+        // (no-op in off mode — callbacks are disabled there anyway).
         fix_float_precision();
         break;
     }

@@ -1,0 +1,221 @@
+diff --git a/UserInterface.cpp b/UserInterface.cpp
+index 1940d84..3ee076f 100644
+--- a/UserInterface.cpp
++++ b/UserInterface.cpp
+@@ -10,9 +10,10 @@
+ #include <optional>
+ #include <cstdio>
+ #include <locale>
+-#include <Windows.h>
+-#include <CommCtrl.h>
+-#include <ShellApi.h>
++#include <windows.h>
++#include <commctrl.h>
++#include <shellapi.h>
++#include <commdlg.h>
+ #include "UserInterface.hpp"
+ #include "WindowsWrapper.hpp"
+ #include "ReplaysAndMods.hpp"
+@@ -505,6 +506,10 @@ std::optional<LaunchOptions> runControlCenter(const std::wstring& ra3Path, const
+ 	constexpr auto commandLineHeight = 20;
+ 	constexpr auto commandLineTitleY = commandLineY - commandLineHeight - 2;
+ 
++	// BattleNet proxy controls
++	constexpr auto proxyY = commandLineY + commandLineHeight + 3;
++	constexpr auto proxyHeight = 20;
++
+ 	constexpr auto buttonWidth = 121;
+ 	constexpr auto buttonHeight = 34;
+ 	constexpr auto buttonPadding = 12;
+@@ -626,7 +631,7 @@ std::optional<LaunchOptions> runControlCenter(const std::wstring& ra3Path, const
+ 		}
+ 	};
+ 
+-	handlers[WM_INITDIALOG] = [&languageData, &icon, setUpBrushes, initializeCommandLineWindow, adjustButtonFont](HWND window, WPARAM, LPARAM) {
++	handlers[WM_INITDIALOG] = [&languageData, &icon, &ra3Path, setUpBrushes, initializeCommandLineWindow, adjustButtonFont](HWND window, WPARAM, LPARAM) {
+ 		myBeginDialog(window, getText(languageData, captionString), icon.get(),
+ 		              GetDesktopWindow(), ICC_STANDARD_CLASSES, clientArea);
+ 
+@@ -634,6 +639,42 @@ std::optional<LaunchOptions> runControlCenter(const std::wstring& ra3Path, const
+ 
+ 		initializeCommandLineWindow(window);
+ 
++		// BattleNet proxy controls
++		{
++			// Check if proxy DLL exists -> auto-check
++			auto dllPath = ra3Path + L"Data\\winmm.dll";
++			bool dllExists = (GetFileAttributesW(dllPath.c_str()) != INVALID_FILE_ATTRIBUTES);
++
++			createControl(window, IDC_ENABLE_PROXY, WC_BUTTONW, L"战网代理",
++			              WS_VISIBLE | BS_AUTOCHECKBOX, 0,
++			              firstLineStart, proxyY, 80, proxyHeight).release();
++			if (dllExists) {
++				SendMessageW(getControlByID(window, IDC_ENABLE_PROXY), BM_SETCHECK, BST_CHECKED, 0);
++			}
++
++			// Read existing ra3bn.ini for path, or use default
++			auto iniPath = ra3Path + L"ra3bn.ini";
++			auto defaultPath = L"Z:\\mnt\\game_disk\\battlenet\\RA3BattleNet\\contents\\NativeDll.dll";
++			std::wstring savedPath(defaultPath);
++			{
++				auto iniContent = readEntireFile<char>(
++					Windows::createFile(iniPath, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING).get());
++				std::string iniStr(iniContent.begin(), iniContent.end());
++				auto pos = iniStr.find("path=");
++				if (pos != std::string::npos) {
++					pos += 5;
++					auto end = iniStr.find_first_of("\r\n", pos);
++					savedPath = Windows::toWide(iniStr.substr(pos, end - pos));
++				}
++			}
++
++			createControl(window, IDC_PROXY_PATH, WC_EDITW, savedPath.c_str(),
++			              WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, WS_EX_TRANSPARENT,
++			              firstLineStart + 85, proxyY, commandLineWidth - 200, proxyHeight).release();
++			createControl(window, IDC_PROXY_BROWSE, WC_BUTTONW, L"浏览...", WS_VISIBLE, 0,
++			              firstLineStart + commandLineWidth - 105, proxyY - 2, 105, proxyHeight + 4).release();
++		}
++
+ 		auto currentX = 0;
+ 		auto nextX = [&currentX] { return currentX += buttonWidth + buttonPadding; };
+ 
+@@ -703,7 +744,33 @@ std::optional<LaunchOptions> runControlCenter(const std::wstring& ra3Path, const
+ 		}
+ 		switch(identifier) {
+ 			case playGame: {
+-				endControlCenter(window, LaunchOptions{LaunchOptions::noFile, {}, getCommandLines(window)});
++				auto opts = LaunchOptions{LaunchOptions::noFile, {}, getCommandLines(window)};
++				auto proxyCheck = getControlByID(window, IDC_ENABLE_PROXY);
++				if (SendMessageW(proxyCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
++					opts.proxyEnabled = true;
++					auto len = GetWindowTextLengthW(getControlByID(window, IDC_PROXY_PATH));
++					opts.proxyDllPath.resize(len + 1);
++					GetWindowTextW(getControlByID(window, IDC_PROXY_PATH), opts.proxyDllPath.data(), len + 1);
++					opts.proxyDllPath.resize(len);
++				} else {
++					// Unchecked: clean up proxy DLL if it exists
++					auto dllPath = ra3Path + L"Data\\winmm.dll";
++					DeleteFileW(dllPath.c_str());
++				}
++				endControlCenter(window, std::move(opts));
++				break;
++			}
++			case IDC_PROXY_BROWSE: {
++				wchar_t buf[MAX_PATH] = {};
++				OPENFILENAMEW ofn = {sizeof(OPENFILENAMEW)};
++				ofn.hwndOwner = window;
++				ofn.lpstrFilter = L"NativeDll.dll\0NativeDll.dll\0DLL Files\0*.dll\0\0";
++				ofn.lpstrFile = buf;
++				ofn.nMaxFile = MAX_PATH;
++				ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
++				if (GetOpenFileNameW(&ofn)) {
++					SetWindowTextW(getControlByID(window, IDC_PROXY_PATH), buf);
++				}
+ 				break;
+ 			}
+ 			case checkForUpdates: {
+diff --git a/UserInterface.hpp b/UserInterface.hpp
+index a78a2a6..e11d101 100644
+--- a/UserInterface.hpp
++++ b/UserInterface.hpp
+@@ -1,9 +1,9 @@
+ #pragma once
+-#include <Windows.h>
++#include <windows.h>
+ #include <vector>
+ #include <string>
+ #include <optional>
+-#include "Common.hpp"
++#include "common.hpp"
+ 
+ using LanguageList = std::vector<std::wstring>;
+ 
+@@ -21,6 +21,8 @@ struct LaunchOptions {
+ 	LoadFileType loadFileType;
+ 	std::wstring fileToBeLoaded;
+ 	std::wstring extraCommandLine;
++	bool proxyEnabled = false;
++	std::wstring proxyDllPath;
+ };
+ 
+ void displayErrorMessage(const std::exception& error, const LanguageData& languageData);
+diff --git a/main.cpp b/main.cpp
+index 41f9e1a..d08ff5c 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -237,7 +237,7 @@ int main() {
+ 		        options = runControlCenterWhenNeeded(uiFlag, options.value().extraCommandLine, customBackground)) {
+ 			customBackground = nullptr;
+ 
+-			const auto& [loadFileType, loadFilePath, extraCommandLine] = options.value();
++			const auto& loadFileType = options.value().loadFileType; const auto& loadFilePath = options.value().fileToBeLoaded; const auto& extraCommandLine = options.value().extraCommandLine;
+ 			auto arguments = getArguments(extraCommandLine);
+ 
+ 			auto getAndRemoveArgument = [&arguments](auto predicate, ExtractMode mode) {
+@@ -413,6 +413,44 @@ int main() {
+ 			}
+ 
+ 			auto finalArguments = ra3Path + gameExe + otherArguments + modArgument + replayArgument + configArgument;
++
++			// BattleNet proxy setup
++			if (options->proxyEnabled && !options->proxyDllPath.empty()) {
++				// Extract winmm.dll from embedded resource to Data/
++				auto dllData = Windows::loadBinaryDataResource<char>(
++					GetModuleHandle(nullptr), MAKEINTRESOURCEW(PROXY_DLL), RT_RCDATA);
++				auto dllPath = ra3Path + L"Data\\winmm.dll";
++				{
++					auto f = Windows::createFile(dllPath, GENERIC_WRITE, 0, CREATE_ALWAYS);
++					auto total = DWORD{0};
++					WriteFile(f.get(), dllData.data(), dllData.size(), &total, nullptr)
++						>> Windows::checkWin32Result("WriteFile winmm.dll", Windows::errorValue, false);
++				}
++				// Write ra3bn.ini only if changed or new
++				{
++					auto iniPath = ra3Path + L"ra3bn.ini";
++					std::string newIni = "[ra3bn]\r\npath=" +
++						Windows::toBytes(options->proxyDllPath) + "\r\n";
++					bool needWrite = true;
++					if (Windows::fileExists(iniPath)) {
++						auto existing = readEntireFile<char>(
++							Windows::createFile(iniPath, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING).get());
++						std::string oldIni(existing.begin(), existing.end());
++						if (oldIni == newIni) needWrite = false;
++					}
++					if (needWrite) {
++						auto f = Windows::createFile(iniPath, GENERIC_WRITE, 0, CREATE_ALWAYS);
++						auto total = DWORD{0};
++						WriteFile(f.get(), newIni.data(), newIni.size(), &total, nullptr)
++							>> Windows::checkWin32Result("WriteFile ra3bn.ini", Windows::errorValue, false);
++					}
++				}
++			}
++
++			// Wine/CrossOver needs WINEDLLOVERRIDES to load our winmm.dll
++			if (options->proxyEnabled) {
++				SetEnvironmentVariableW(L"WINEDLLOVERRIDES", L"winmm=n,b");
++			}
+ 			auto game = createProcess(finalArguments, ra3Path.c_str());
+ 			// 假如游戏以窗口化模式启动，等待游戏窗口出现后，可以自动调整窗口位置
+ 			if(windowed.has_value()) {
+diff --git a/resource.h b/resource.h
+index 3fe36f3..cd4f882 100644
+--- a/resource.h
++++ b/resource.h
+@@ -11,3 +11,8 @@
+ 
+ #define BUILTIN_ENGLISH 300
+ #define BUILTIN_CHINESE 301
++
++#define PROXY_DLL      400
++#define IDC_ENABLE_PROXY  500
++#define IDC_PROXY_PATH    501
++#define IDC_PROXY_BROWSE  502
+diff --git a/resource.rc b/resource.rc
+index c80d6de..c65546b 100644
+--- a/resource.rc
++++ b/resource.rc
+@@ -29,3 +29,4 @@ AR_BACKGROUND   BITMAP "arbm.bmp"
+ RA3BAR_LOGO     RCDATA "ra3bar.array"
+ BUILTIN_ENGLISH RCDATA "ra3barlauncher_english.csf"
+ BUILTIN_CHINESE RCDATA "ra3barlauncher_chinese.csf"
++PROXY_DLL       RCDATA "winmm_proxy.dll"
